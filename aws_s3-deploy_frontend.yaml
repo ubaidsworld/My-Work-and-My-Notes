@@ -1,0 +1,99 @@
+name: Deploy to S3
+
+on:
+  workflow_dispatch:
+    
+  # push:
+  #   branches:
+  #     - dev # Trigger only on `dev` branch pushes
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+          pnpm --version
+
+      - name: Override .npmrc for GitHub Packages
+        run: |
+          echo "//npm.pkg.github.com/:_authToken=${{ secrets.GIT_REPO_TOKEN }}" > ~/.npmrc
+          echo "@hire-link:registry=https://npm.pkg.github.com" >> ~/.npmrc
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile --loglevel verbose
+
+      - name: Build Project
+        run: pnpm run build
+
+      # - name: Export Static Output (Next.js)
+      #   run: pnpm exec next export
+
+      - name: List exported output
+        run: ls -la ./out
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::741448963528:role/Github-Action-Dev-HirelinkS3-Upload
+          role-session-name: GitHubActions
+          aws-region: ap-south-1
+
+      - name: Deploy to S3
+        run: aws s3 sync ./out s3://dev.frontend.hirelink.com --delete
+
+      - name: Invalidate CloudFront Cache
+        run: aws cloudfront create-invalidation --distribution-id EGPB3NIHVOPXZ --paths "/*"
+
+      - name: Send Slack Notification
+        run: |
+          curl -X POST -H 'Content-type: application/json' --data '{
+            "text": "🚀 *Dashboard Deployed to S3 by ${{ github.actor }}!*",
+            "attachments": [
+              {
+                "color": "#36a64f",
+                "fields": [
+                  {
+                    "title": "Repository",
+                    "value": "${{ github.repository }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Branch",
+                    "value": "${{ github.ref_name }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Commit",
+                    "value": "${{ github.sha }}",
+                    "short": false
+                  },
+                  {
+                    "title": "Triggered By",
+                    "value": "${{ github.actor }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Domain URL",
+                    "value": "https://dev.hirelink.tech/",
+                    "short": false
+                  }
+                ]
+              }
+            ]
+          }' ${{ secrets.SLACK_WEBHOOK_URL }}
